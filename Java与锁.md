@@ -1,0 +1,1 @@
+Java的锁分为语法糖级别的synchronized
