@@ -139,7 +139,7 @@ Hotsport VM把young gen分为了eden、survival两个区域，其中survival又�
 - 3. 回收from区，同样复制-清除，copy至to
 - 4. to变为from，from变为to
 - 5. 以此轮回下去。这个过程中对象每次从from copy到to，年龄都会+1
-- 6. 对象在某次copy中年龄达到了阈值，copy到old gen
+- 6. 对象在某次copy中年龄达到了阈值，copy到old gen
 
 ```
 ps: 为什么要把survival分成两块呢？
@@ -165,9 +165,9 @@ ps: 为什么要把survival分成两块呢？
 CMS(Concurrent Mark Sweep)收集器是一个以『低延迟』为特点的垃圾收集器，适合主流的B/S系统。
 从命名也能看出来，CMS能和用户程序并发执行，他的回收区域为「old gen」，其回收过程如下：
 
-- 1. **初始标记**：根集枚举，列举所有GC ROOT能直接关联到的对象。由于CMS并不是whole heap垃圾收集器，所以CMS回收old gen时，必须把young gen算作是ROOT，那么CMS的GC ROOT包含栈、寄存器、全局变量以及young gen。（同样的道理，young gen GC也要把old gen作为GC ROOT）
+- 1. **初始标记**：根集枚举，列举所有GC ROOT能直接关联到的对象。由于CMS并不是whole heap垃圾收集器，所以CMS回收old gen时，必须把young gen算作是ROOT，那么CMS的GC ROOT包含栈、寄存器、全局变量以及young gen。（同样的道理，young gen GC也要把old gen作为GC ROOT）
 - 2. **并发标记**：开始对象追踪，标记所有可达的对象，这个过程与用户线程并发执行
-- 3. **重新标记**：重新扫描2步中「write barrier」维护的「记忆集」以及GC ROOT
+- 3. **重新标记**：重新扫描2步中「write barrier」维护的「记忆集」以及GC ROOT
 - 4. **并发清除**：清除对象
 
 >**分析**
@@ -186,7 +186,7 @@ CMS(Concurrent Mark Sweep)收集器是一个以『低延迟』为特点的垃圾
 
 还有另外一个思路，并发标记结束后，找到真正的活跃对象 $L + $N，这种方式叫做增量更新 INC（ Incremental Update），而CMS采用的就是 INC。
 
-不管是SATB还是INC，都需要一个维护引用变更的机制，这个机制就是 「写屏障」。下面提供INC的伪代码：
+不管是SATB还是INC，都需要一个维护引用变更的机制，这个机制就是 「写屏障」。下面提供INC的伪代码：
 
 ```c
 //src:某个对象，slot:某个槽，new_ref;新引用
@@ -208,7 +208,7 @@ write_barrier_ref(Object* src,object** slot,Object* new_ref){
 
 ![并发标记问题.png](img/并发标记问题.png)
 
-在并发标记的过程中，a、b、A都已经被标记，这个时候修改器断开A和B之间的引用，让b引用B，如果write_barrier没有记忆这个引用变更，对象B就会被错杀。既然write_barrier记忆了会被错杀的对象，那么应该在并发标记之后来一次重新标记，保证正确性！重新标记稍后介绍。
+在并发标记的过程中，a、b、A都已经被标记，这个时候修改器断开A和B之间的引用，让b引用B，如果write_barrier没有记忆这个引用变更，对象B就会被错杀。既然write_barrier记忆了会被错杀的对象，那么应该在并发标记之后来一次重新标记，保证正确性！重新标记稍后介绍。
 
 **标记过程中的三色标记：** 假设对象图为 G，其中 $G 都已经被扫描过，那么 (G-$G) 部分还没被扫描。假如这个时候修改器在修改对象图，那么会产生两种效果：
 
@@ -220,9 +220,9 @@ write_barrier_ref(Object* src,object** slot,Object* new_ref){
 
 ![三色标记.png](img/三色标记.png)
 
-扫描过的对象 $G 为黑色。未扫描的对象 (G - $G)为白色。灰色为扫描过，但slot没有扫描完全，如图中的灰色对象。灰色对象是已经确定可达，但是他引用的对象还未完全确定。一个对象不会直接从黑色变成白色。
+扫描过的对象 $G 为黑色。未扫描的对象 (G - $G)为白色。灰色为扫描过，但slot没有扫描完全，如图中的灰色对象。灰色对象是已经确定可达，但是他引用的对象还未完全确定。一个对象不会直接从黑色变成白色。
 
-如图所示，在并发标记过程中，修改器修改引用，使黑色对象直接引用白色对象，如果没有STAB或者INC写屏障，这个白色对象会被错杀，因为扫描过的黑色对象不会再被扫描。
+如图所示，在并发标记过程中，修改器修改引用，使黑色对象直接引用白色对象，如果没有STAB或者INC写屏障，这个白色对象会被错杀，因为扫描过的黑色对象不会再被扫描。
 
 按照这个思路，在三色标记的过程中，有两种情况会导致对象被错杀：
 
@@ -234,13 +234,23 @@ write_barrier_ref(Object* src,object** slot,Object* new_ref){
 
 那么从三色标记的角度，解释了为什么需要STAB、INC写屏障。也可以得出，重新标记是必须的，而且需要扫描「记忆集(写屏障)」和 「GC根节点」。还有几个点要注意！
 
-     1.CMS的GC根节点包含了整个young gen。可能会有这样的疑问，为什么young gen不去维护「remembered set」，而是在CMS标记时，扫描整个young gen？使用remembered set的初衷就是为了减少扫描的非收集区域大小，只扫描有变化的部分，然而young gen的引用变更实在是太频繁了，给young gen维护remembered set会产生很大的开销，而且影响吞吐量！索性就把整个young gen都作为GC Root（扫描但不被收集）
+     1.CMS的GC根节点包含了整个young gen。可能会有这样的疑问，为什么young gen不去维护「remembered set」，而是在CMS标记时，扫描整个young gen？使用remembered set的初衷就是为了减少扫描的非收集区域大小，只扫描有变化的部分，然而young gen的引用变更实在是太频繁了，给young gen维护remembered set会产生很大的开销，而且影响吞吐量！索性就把整个young gen都作为GC Root（扫描但不被收集）
      注：astore1，等修改栈指针的字节码不会引发write barrier，能引发write barrier的字节码只有putfield，putstatic和aastore。
 
 //TODO
 
 注：jvm利用虚拟内存来实现GC写屏障。并发标记时，会把把页面设为写保护，然后用户程序修改对象引用会触发页面异常，这个时候执行页面异常处理程序去保存快照。所以这个时候页面需要两种访问权限，1,用户程序访问触发页面异常；2,GC程序正常扫描访问。怎么实现一个物理页映射成两个不同访问权限的虚拟地址呢。用shm_open创建共享内存对象，用不同的保护权限映射两次。
 异常处理过程：异常处理程序去判断当前页面中的对象是不是引用发生了变更，比如从断开了灰色对象到白色对象的引用，也就是说异常处理程序接管了这个修改引用的过程，他会保存这个页面所有的旧数据。
+
+### 碎片笔记
+
+----
+作者：RednaxelaFX
+链接：https://www.zhihu.com/question/62953438/answer/203759926
+来源：知乎
+著作权归作者所有。商业转载请联系作者获得授权，非商业转载请注明出处。
+
+HotSpot VM实现finalizer的办法其实很直观：系统通过特殊的FinalReference（一种介于WeakReference和PhantomReference之间的内部实现的弱引用类型）来引用带有非空 finalize() 方法的对象——这些对象在创建的时候就会伴随创建出一个引用它的FinalReference出来。然后在GC的时候，FinalReference也跟其它弱引用类型一样由ReferenceProcessor发现并处理：GC的marking分为strong marking和weak marking两个阶段，在strong marking过程中如果mark到弱引用的话，并不是立即把其referent也mark上，而是会把弱引用记录在ReferenceProcessor里对应的队列里。Strong marking之后会做reference processing，扫描前面记录下来的弱引用看它们的referent是否已经被strong marking标记为活，如果是的话说明对象还活得好好的，就不管它了让它继续活下去，反之则意味着referent指向的对象只是weak-reachable，就要做相应的弱引用处理。对FinalReference来说，弱引用处理就是这次把referent还是标记为活的，并把它加入到finalize queue里去等着被FinalizeThread去调用其 finalize() 方法。等它的 finalize() 方法被调用过之后，下次再GC的时候这个对象就没有FinalReference引用了，所以就不会再经历一次弱引用处理，就可以好好长眠了。
 
 
 
