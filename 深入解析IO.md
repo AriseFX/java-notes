@@ -312,8 +312,8 @@ int main(int argc, char *argv[])
 使用
 
 ```
-1.获取/目录的inode号，根据inode找到数据块，数据块中存储了a目录的inode号和文件名称
-2.创建文件x.txt，生成inode等信息。获取a目录的inode号，根据inode找到数据块，在数据块中增加x.txt文件的inode编号和文件名称
+1.获取/目录的inode号，根据inode找到数据块，数据块中存储了run目录的inode号和文件名称
+2.创建文件x.txt，生成inode等信息。获取run目录的inode号，根据inode找到数据块，在数据块中增加x.txt文件的inode编号和文件名称
 ```
 就这样，linux的树形目录结构就形成了。
 
