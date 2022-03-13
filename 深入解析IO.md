@@ -479,7 +479,7 @@ epollwait 询问反应堆是否有事件反生，可以阻塞让出CPU，如果�
 
 ![epoll原理.jepg](/img/epoll原理.jpeg)
 
-既然能被不同的文件系统唤醒，那么一定有一个注册`回调路径`的机制。前面提到了files数组的每一项都是一个file结构体，file结构体中有一个比较关键的`file_operations`结构体，它里面就包含了注册回调路径的`poll`函数。而sockfs、timerfd、eventfd、pipefs这几种文件系统就实现了`poll`函数，而`ext`系列文件系统就没有实现`poll`函数。
+既然能被不同的文件系统唤醒，那么一定有一个注册`回调路径`的机制。前面提到了files数组的每一项都是一个file结构体，file结构体中有一个比较关键的`file_operations`结构体，它里面就包含了注册回调路径的`poll`函数。而sockfs、timerfd、eventfd、pipefs这几种文件系统就实现了`poll`函数。实现`poll`函数是能让`epoll`管理的充分必要条件。
 
 ![VFS.png](/img/VFS.png)
 
