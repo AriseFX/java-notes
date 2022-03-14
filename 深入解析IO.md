@@ -483,6 +483,8 @@ epollwait 询问反应堆是否有事件反生，可以阻塞让出CPU，如果�
 
 ![VFS.png](/img/VFS.png)
 
+---
+
 ### 五. 从EPOLL到网关
 
 前面的案例为单epoll反应堆同时承担了accepter和worker两个角色，这种模式也很常见，比如redis就是这种IO模型。但是在多线程应用中，通常会把这两个角色分为不同的epoll反应堆。netty中为了兼容多种IO多路复用库，提出了EventLoop的概念。负责accepter的Eventloop叫做一般叫做master，负责处理read/write的Eventloop叫做worker。
@@ -609,16 +611,132 @@ public interface GatewayFilter {
 在前面的API网关案例中，数据是一定要先read到用户空间，然后经过filter处理过后再写出去的。
 这个read的过程是不可避免的，因为API网关的核心逻辑就是对数据的处理嘛。
 
-如果这个这个数据并不需要经过加工呢，只是简单的透传。比如要写一个https/ss5代理，或者是HaProxy / Nginx的4层网络代理，这种情况下把数据read到用户空间再写出去是多余的。
+如果数据不需要经过加工呢，而是简单的透传。比如要写一个https/ss5代理，或者是HaProxy / Nginx的4层网络代理，这种情况下把数据read到用户空间再写出去反而是多余的。如图
+
+![splice_1.png](/img/splice_1.png)
+
+以此为例，介绍一下几种零拷贝技术。
 
 ### 八. 零拷贝
 
-### 九. 几种零拷贝机制
+网上对零拷贝的解释如下(https://zhuanlan.zhihu.com/p/308054212):
 
-### 十. Java零拷贝代理
+`零拷贝技术是指计算机执行操作时，CPU不需要先将数据从某处内存复制到另一个特定区域。这种技术通常用于通过网络传输文件时节省 CPU 周期和内存带宽。`
 
-### 十一. netty实现的epoll/splice存在的问题
+linux中零拷贝分为这几种:
 
-### 十二. bug修复
+- 1. 减少或消除内核和用户空间之间的内存拷贝，从而减少用户态--内核态的切换次数
 
-### 十三. netty待优化的点
+![mmap.jpeg](/img/mmap.jpeg)
+
+```
+1.用户进程调用 mmap()，从用户态陷入内核态，将内核缓冲区映射到用户缓存区；
+
+2.DMA 控制器将数据从硬盘拷贝到内核缓冲区；
+
+3.mmap() 返回，上下文从内核态切换回用户态；
+
+4.用户进程调用 write()，尝试把文件数据写到内核里的套接字缓冲区，再次陷入内核态；
+
+5.CPU 将内核缓冲区中的数据拷贝到的套接字缓冲区；
+
+6.DMA 控制器将数据从套接字缓冲区拷贝到网卡完成数据传输；
+
+7.write() 返回，上下文从内核态切换回用户态。
+```
+
+- 2. 减少或消除内核缓冲区之间的内存拷贝
+
+![sendfile.jpeg](/img/sendfile.jpeg)
+
+```
+1.用户进程调用 sendfile()，从用户态陷入内核态；
+
+2.DMA 控制器使用 scatter 功能把数据从硬盘拷贝到内核缓冲区进行离散存储；
+
+3.CPU 把包含内存地址和数据长度的缓冲区描述符拷贝到套接字缓冲区，
+DMA 控制器能够根据这些信息生成网络包数据分组的报头和报尾
+
+4.DMA 控制器根据缓冲区描述符里的内存地址和数据大小，
+使用 scatter-gather 功能开始从内核缓冲区收集离散的数据并组包，
+最后直接把网络包数据拷贝到网卡完成数据传输；
+
+5.sendfile() 返回，上下文从内核态切换回用户态。
+```
+
+- 3. 能够绕开内核直接操作硬件存储接口
+
+![直接IO.jpeg](/img/直接IO.jpeg)
+
+- 4. 利用DMA完成硬件存储接口和内核缓冲区之间的内存拷贝，而非CPU参与
+
+### 这几种零拷贝方式可以去看看这篇文章，写得很详细 https://zhuanlan.zhihu.com/p/308054212
+
+---
+
+### 九. netty实现的epoll/splice存在的问题
+
+因为我们ss5/https代理用了splice，所以我这边重点就讲解这个。
+
+splice系统调用的定义如下，具体可以查看man7
+
+```c
+#define _GNU_SOURCE         /* See feature_test_macros(7) */
+#include <fcntl.h>
+
+ssize_t splice(int fd_in, off64_t *off_in, int fd_out,
+                      off64_t *off_out, size_t len, unsigned int flags);
+
+
+SPLICE_F_MOVE
+        Attempt to move pages instead of copying.  This is only a
+        hint to the kernel: pages may still be copied if the
+        kernel cannot move the pages from the pipe, or if the pipe
+        buffers don't refer to full pages.  The initial
+        implementation of this flag was buggy: therefore starting
+        in Linux 2.6.21 it is a no-op (but is still permitted in a
+        splice() call); in the future, a correct implementation
+        may be restored.
+
+SPLICE_F_NONBLOCK
+        Do not block on I/O.  This makes the splice pipe
+        operations nonblocking, but splice() may nevertheless
+        block because the file descriptors that are spliced
+        to/from may block (unless they have the O_NONBLOCK flag
+        set).
+
+SPLICE_F_MORE
+        More data will be coming in a subsequent splice.  This is
+        a helpful hint when the fd_out refers to a socket (see
+        also the description of MSG_MORE in send(2), and the
+        description of TCP_CORK in tcp(7)).
+
+SPLICE_F_GIFT
+        Unused for splice(); see vmsplice(2).
+```
+
+![splice_2.png](/img/splice_2.png)
+
+splice用于两个文件描述符之间”copy“数据，fd_in和fd_out分别代表输入端和输出端，两者之中必须有一个是pipe。也就是说要想把src_fd的数据”copy”到dist_fd。代码如下:
+```
+// src_fd -> pipe -> dist_fd
+
+int pfd[2];
+pipe(pfd);
+ssize_t bytes = splice(src_fd, NULL, pfd[1], NULL, 4096, SPLICE_F_MOVE);
+assert(bytes != -1);
+bytes = splice(pfd[0], NULL, dist_fd, NULL, bytes, SPLICE_F_MOVE | SPLICE_F_MORE);
+```
+1. 用户调用pipe()创建管道文件。发生用户--内核上下文切换
+2. 用户调用splice()将src_fd的数据"copy"到管道输出端。发生用户--内核上下文切换
+3. 用户调用splice()将管道的输入端数据"copy"到dist_fd。发生用户--内核上下文切换
+
+数据虽然没有copy到用户空间，但是在内核中"copy"了两次，这还能叫零拷贝吗。其实这里的"copy"并不是真正的复制数据，而是拷贝了数据页指针，并没有产生额外的socket buffer。
+相比于前面那种需要用户-内核来回复制的，splice的优势就很大了。
+
+在Java中，splice相关的案例几乎没有，主要还是jdk并没有对他做支持。Netty4虽然支持了splice，但是有很多毛病。
+
+Netty使用splice案例如下:
+
+这个后面再补充....可以直接看相关的PR
+https://github.com/netty/netty/pull/12138
